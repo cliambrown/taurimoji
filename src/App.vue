@@ -29,15 +29,25 @@ watch(
   (length) => highlightedIndex.value = 0
 );
 
+watch(highlightedIndex, (index) => {
+  const el = document.getElementById('emoji-'+index);
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+});
+
 function selectEmoji(emoji, index) {
-  if (!emoji) emoji = filteredEmojis.value[index];
+  if (!emoji) {
+    if (index > filteredEmojis.value.length - 1) return false;
+    emoji = filteredEmojis.value[index];
+  }
+  if (!emoji) return false;
   highlightedIndex.value = index;
   if (shiftIsDown) {
     selectedText = selectedText + emoji.emoji;
     copy(selectedText);
   } else {
     copy(emoji.emoji);
-    exit(0);
+    // Slight delay seems to have fixed a minor bug where emoji wasn't copied...
+    setTimeout(() => exit(0), 10);
   }
 }
 
@@ -114,7 +124,7 @@ onBeforeUnmount(() => {
     <div class="grow py-2 -mx-1 overflow-y-auto text-center" style="min-height:1px;">
       
       <div v-for="(emoji, index) in filteredEmojis" class="inline-block m-1">
-        <button type="button" class="text-3xl cursor-pointer p-1 rounded-md" :class="{ 'bg-gray-300': index == highlightedIndex }" @click="selectEmoji(emoji, index)" :title="emoji.name">
+        <button type="button" :id="'emoji-'+index" class="text-3xl cursor-pointer p-1 rounded-md" :class="{ 'bg-gray-300': index == highlightedIndex }" @click="selectEmoji(emoji, index)" :title="emoji.name">
           {{ emoji.emoji }}
         </button>
       </div>
