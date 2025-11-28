@@ -1,6 +1,6 @@
 # Taurimoji
 
-A simple emoji picker desktop application built with Tauri.
+A simple emoji picker desktop application.
 
 Uses [the complete v17.0 emoji list](https://unicode.org/emoji/charts/full-emoji-list.html) (with a few taken out because they seemed buggy on my machine).
 

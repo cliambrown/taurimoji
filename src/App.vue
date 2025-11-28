@@ -4,6 +4,7 @@ import copy from 'copy-text-to-clipboard';
 import { exit } from '@tauri-apps/plugin-process';
 
 import emojis from './emoji.json';
+const emojiCount = emojis.length;
 
 const input = useTemplateRef('input');
 
@@ -19,9 +20,13 @@ let ctrlIsDown = false;
 let shiftIsDown = false;
 
 const filteredEmojis = computed(() => {
-  if (!filter.value) return emojis;
-  const filterL = filter.value.toLowerCase();
-  return emojis.filter(emoji => emoji.name.includes(filterL));
+  if (!filter.value || !filter.value.trim()) return emojis;
+  const filterL = filter.value.trim().toLowerCase();
+  let result = [];
+  for (let i=0; i<emojiCount; ++i) {
+    if (emojis[i].name.indexOf(filterL) > -1) result.push(emojis[i]);
+  }
+  return result;
 });
 
 watch(
