@@ -1,33 +1,4 @@
 <script setup>
-
-/**
- * TODO
- */
-
-  // ⛔ Type anywhere
-  // ✅ Dark mode
-  // ✅ Use vue click.ctrl
-  // ✅ Check for shift / ctrl on keydown event
-  // ✅ Add pinned & hot emoji to overall list for nav
-  // ✅ Finish keyboard events
-  // ✅ Pin/unpin emojis
-  // ✅ Remember emojis used
-  // ✅ Remove used emoji
-  // ✅ Clear emoji history
-  // ✅ Setting: # of used emojis to show
-  // ✅ Setting: disable/enable emoji history
-  // ✅ Setting: dark mode / light mode / system
-  // ✅ Setting: Emoji size
-  // ✅ Switch to v-show instead of filtered array
-  // ✅ Get more emoji data from spreadsheet
-  // ✅ Scroll into view
-  // ✅ Change highlighted only when needed
-  // ✅ Fix unshown hot emojis included in list of Ids -- not sure why that happened. maybe use a computed property with 3 sub-properties (one for each list of emojis) to avoid too much computation
-  // Help modal
-  // Settings pop-up
-  // Detect if emoji supported
-  // Clear filter text button
-
 import { ref, reactive, computed, watch, useTemplateRef, onBeforeMount, onBeforeUnmount, onMounted, isProxy, toRaw, nextTick } from 'vue';
 import copy from 'copy-text-to-clipboard';
 import { exit } from '@tauri-apps/plugin-process';
@@ -40,13 +11,21 @@ const emojis = ref([]);
 import emojisJson from './emoji.json';
 for (let i=0; i<emojisJson.length; ++i) {
   emojisJson[i].id = emojisJson[i].id + '';
+  let codes = [];
+  for (let j=0; j<emojisJson[i].code.length; ++j) {
+    codes.push(parseInt(emojisJson[i].code[j].replace('U+', '0x')));
+  }
+  emojisJson[i].emoji = String.fromCodePoint(...codes);
   emojis.value.push(emojisJson[i]);
 }
+console.log('done parsing codes');
 
 const hotEmojis = ref([]);
 const filter = ref('');
 const highlightedEmojiId = ref('');
 const selectedEmojis = ref([]);
+
+let dialogOpen = false;
 
 const settings = reactive({
   theme: 'system',
@@ -58,6 +37,10 @@ const settings = reactive({
 });
 
 const filterInput = useTemplateRef('filterinput');
+
+const dialog = useTemplateRef('dialog');
+const dialogBackdrop = useTemplateRef('dialogbackdrop');
+const dialogPanel = useTemplateRef('dialogpanel');
 
 const hotEmojisToShow = computed(() => {
   let r = [];
@@ -79,7 +62,6 @@ const unfilteredPinnedEmojiIds = computed(() => {
   for (let i=0; i<settings.pinned_emojis.length; ++i) {
     if (!settings.pinned_emojis[i].filtered) ids.push(settings.pinned_emojis[i].id);
   }
-  console.log('computed unfilteredPinnedEmojiIds', ids);
   return ids;
 });
 
@@ -88,7 +70,6 @@ const unfilteredHotEmojiIds = computed(() => {
   for (let i=0; i<hotEmojisToShow.value.length; ++i) {
     if (!hotEmojisToShow.value[i].filtered) ids.push(hotEmojisToShow.value[i].id);
   }
-  console.log('computed unfilteredHotEmojiIds', ids);
   return ids;
 });
 
@@ -97,7 +78,6 @@ const unfilteredMainEmojiIds = computed(() => {
   for (let i=0; i<emojis.value.length; ++i) {
     if (!emojis.value[i].filtered) ids.push(emojis.value[i].id);
   }
-  console.log('computed unfilteredMainEmojiIds', ids);
   return ids;
 });
 
@@ -221,6 +201,7 @@ function pinEmoji(sourceEmoji) {
   }
   if (!isAlreadyPinned) settings.pinned_emojis.unshift(emoji);
   filterEmojis();
+  highlightedEmojiId.value = sourceEmoji.id;
 }
 
 function unpinEmoji(index) {
@@ -268,11 +249,18 @@ function clearEmojiHistory() {
   filterEmojis();
 }
 
+function clearFilterInput() {
+  filter.value = '';
+  filterInput.value.focus();
+}
+
 function handleKeydown(event) {
   switch (event.keyCode) {
     case 9: // Tab
-      event.preventDefault();
-      emojiNav(!event.shiftKey);
+      if (!dialogOpen) {
+        event.preventDefault();
+        emojiNav(!event.shiftKey);
+      }
       break;
     case 87: // w
       if (event.ctrlKey) {
@@ -282,44 +270,65 @@ function handleKeydown(event) {
       break;
     case 27: // Esc
       event.preventDefault();
-      filter.value = '';
-      filterInput.value.focus();
+      if (dialogOpen) closeDialog();
+      else clearFilterInput();
       break;
     case 13: // Enter
       event.preventDefault();
-      if (highlightedEmojiId.value) {
-        if (event.shiftKey && !event.ctrlKey && !event.altKey) { // Shift
-          if (highlightedEmoji.value) addEmojiToSelected(highlightedEmoji.value);
-        } else if (event.ctrlKey && !event.shiftKey && !event.altKey) { // Ctrl
-          if (/^p-/.test(highlightedEmojiId.value)) { // Pinned
-            let index = -1;
-            for (let i=0; i<settings.pinned_emojis.length; ++i) {
-              if (settings.pinned_emojis[i].id === highlightedEmojiId.value) {
-                index = i;
-                break;
+      if (!dialogOpen) {
+        if (highlightedEmojiId.value) {
+          if (event.shiftKey && !event.ctrlKey && !event.altKey) { // Shift
+            if (highlightedEmoji.value) addEmojiToSelected(highlightedEmoji.value);
+          } else if (event.ctrlKey && !event.shiftKey && !event.altKey) { // Ctrl
+            if (/^p-/.test(highlightedEmojiId.value)) { // Pinned
+              let index = -1;
+              for (let i=0; i<settings.pinned_emojis.length; ++i) {
+                if (settings.pinned_emojis[i].id === highlightedEmojiId.value) {
+                  index = i;
+                  break;
+                }
               }
+              if (index > -1) unpinEmoji(index);
+            } else {
+              if (highlightedEmoji.value) pinEmoji(highlightedEmoji.value);
             }
-            if (index > -1) unpinEmoji(index);
-          } else {
-            if (highlightedEmoji.value) pinEmoji(highlightedEmoji.value);
-          }
-        } else if (event.altKey && !event.shiftKey && !event.ctrlKey) { // Alt
-          if (/^h-/.test(highlightedEmojiId.value)) {
-            let index = -1;
-            for (let i=0; i<hotEmojis.value.length; ++i) {
-              if (hotEmojis.value[i].id === highlightedEmojiId.value) {
-                index = i;
-                break;
+          } else if (event.altKey && !event.shiftKey && !event.ctrlKey) { // Alt
+            if (/^h-/.test(highlightedEmojiId.value)) {
+              let index = -1;
+              for (let i=0; i<hotEmojis.value.length; ++i) {
+                if (hotEmojis.value[i].id === highlightedEmojiId.value) {
+                  index = i;
+                  break;
+                }
               }
+              if (index > -1 && highlightedEmoji.value) removeEmojiFromHistory(highlightedEmoji.value, index);
             }
-            if (index > -1 && highlightedEmoji.value) removeEmojiFromHistory(highlightedEmoji.value, index);
+          } else if (!event.shiftKey && !event.ctrlKey && !event.altKey) { // No modifiers
+            if (highlightedEmoji.value) copyEmoji(highlightedEmoji.value);
           }
-        } else if (!event.shiftKey && !event.ctrlKey && !event.altKey) { // No modifiers
-          if (highlightedEmoji.value) copyEmoji(highlightedEmoji.value);
         }
       }
       break;
   }
+}
+
+function showDialog() {
+  dialogOpen = true;
+  dialog.value.show();
+  setTimeout(() => {
+    dialogBackdrop.value.removeAttribute('data-closed');
+    dialogPanel.value.removeAttribute('data-closed');
+  }, 10);
+}
+
+function closeDialog() {
+  dialogOpen = false;
+  dialogBackdrop.value.setAttribute('data-closed', 'true');
+  dialogPanel.value.setAttribute('data-closed', 'true');
+  setTimeout(() => {
+    dialog.value.close();
+  }, 160);
+  
 }
 
 onBeforeMount(async () => {
@@ -379,20 +388,25 @@ onMounted(() => filterInput.value.focus());
 </script>
 
 <template>
-  <main class="w-full h-full flex flex-col max-h-full">
+  <main class="flex flex-col w-full h-full max-h-full">
     
-    <div class="shrink-0 px-4 py-2 shadow dark:bg-gray-900">
-      <input type="text" v-model="filter" ref="filterinput" id="filterinput" class="block w-full rounded-md bg-white dark:bg-gray-800 px-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 placeholder:text-gray-500 focus:outline-0 focus:-outline-offset-2 focus:outline-indigo-500 sm:text-sm/6" />
+    <div class="px-4 py-2 bg-gray-200 shrink-0 dark:bg-gray-900">
+      <div class="relative">
+        <input type="text" v-model="filter" placeholder="Search" ref="filterinput" id="filterinput" class="block w-full rounded-md bg-white dark:bg-gray-800 px-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 placeholder:text-gray-500 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6" />
+        <button type="button" @click="clearFilterInput" class="absolute top-0 right-0 flex items-center justify-center text-gray-700 rounded-md cursor-pointer size-10 dark:text-gray-300">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-5"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
     </div>
     
-    <div class="grow py-2 overflow-y-auto flex flex-wrap justify-center items-start gap-1" style="min-height:1px;">
+    <div class="flex flex-wrap items-start justify-center gap-2 py-2 overflow-y-auto grow" style="min-height:1px;">
       
       <button v-for="(emoji, index) in settings.pinned_emojis"
         type="button"
         v-show="!emoji.filtered"
         :id="'emoji-'+emoji.id"
         :title="emoji.name"
-        class="cursor-pointer p-1 rounded-md focus:outline-none relative min-w-8 min-h-8"
+        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -404,7 +418,7 @@ onMounted(() => filterInput.value.focus());
         @click.ctrl.exact="unpinEmoji(index)"
         tabindex="-1"
         >
-        <div class="size-4 rounded-full text-yellow-400 flex items-center justify-center absolute top-0 -right-1">
+        <div class="absolute top-0 flex items-center justify-center text-yellow-400 rounded-full size-4 -right-1">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star size-3"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>
         </div>
         {{ emoji.emoji }}
@@ -415,7 +429,7 @@ onMounted(() => filterInput.value.focus());
         v-show="!emoji.filtered"
         :id="'emoji-'+emoji.id"
         :title="emoji.name"
-        class="cursor-pointer p-1 rounded-md focus:outline-none relative min-w-8 min-h-8"
+        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -428,7 +442,7 @@ onMounted(() => filterInput.value.focus());
         @click.alt.exact="removeEmojiFromHistory(emoji, index)"
         tabindex="-1"
         >
-        <div class="size-4 rounded-full text-gray-500 dark:text-gray-300 flex items-center justify-center absolute top-0 -right-1">
+        <div class="absolute top-0 flex items-center justify-center text-gray-500 rounded-full size-4 dark:text-gray-300 -right-1">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock-icon lucide-clock size-3"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
         </div>
         {{ emoji.emoji }}
@@ -439,7 +453,7 @@ onMounted(() => filterInput.value.focus());
         v-show="!emoji.filtered"
         :id="'emoji-'+emoji.id"
         :title="emoji.name"
-        class="cursor-pointer p-1 rounded-md focus:outline-none min-w-8 min-h-8"
+        class="flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -456,53 +470,126 @@ onMounted(() => filterInput.value.focus());
       
     </div>
     
-    <div class="shrink-0 bg-white shadow-lg dark:bg-gray-800 px-4 py-2 flex items-start gap-8">
-      <div class="grow flex flex-wrap gap-1 items-center">
-        <div class="text-gray-400 size-10 flex items-center justify-center">
+    <div class="flex items-center gap-8 px-4 py-2 bg-gray-200 shrink-0 dark:bg-gray-800">
+      <div class="flex flex-wrap items-center gap-1 grow">
+        <div class="flex items-center justify-center text-gray-400 size-10">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clipboard-icon lucide-clipboard"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
         </div>
         <div v-for="(emoji, index) in selectedEmojis">
           <button type="button"
-            class="text-3xl cursor-pointer p-1 rounded-md relative group focus:outline-none"
+            class="relative flex items-center justify-center text-3xl rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 group"
             @click="removeSelectedEmoji(index)"
             :title="'Remove ' + emoji.name + ' from clipboard'"
             >
-            <div class="size-4 rounded-full bg-gray-600/40 dark:bg-gray-200/40 text-gray-900 dark:text-gray-50 flex items-center justify-center absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div class="absolute top-0 right-0 flex items-center justify-center text-gray-900 transition-opacity rounded-full opacity-0 size-4 bg-gray-600/40 dark:bg-gray-200/40 dark:text-gray-50 group-hover:opacity-100">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-3"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </div>
             {{ emoji.emoji }}
           </button>
         </div>
       </div>
-      <div class="shrink-0 flex gap-1">
+      <button type="button" class="flex items-center justify-center text-blue-800 rounded-md cursor-pointer shrink-0 size-8 dark:text-blue-100 focus:outline-none" @click="showDialog">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings-icon lucide-settings size-5"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+    </div>
+    
+    <dialog ref="dialog" id="dialog" aria-labelledby="dialog-title" class="fixed inset-0 overflow-y-auto bg-transparent size-auto max-h-none max-w-none">
+      
+      <div data-closed ref="dialogbackdrop" class="fixed inset-0 transition-opacity duration-150 bg-gray-800/75 data-closed:opacity-0" @click="closeDialog"></div>
+      
+      <div tabindex="0" class="flex items-center justify-center h-full max-h-screen min-h-full p-4 text-center focus:outline-none sm:p-0">
         
-        <!-- <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings-icon lucide-settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg> -->
-         
-        {{ highlightedEmojiId }}
-         
-        <button type="button" @click="clearEmojiHistory">Clear history</button>
-        
-        <div>
-          <input id="remember_used_emojis" type="checkbox" v-model="settings.remember_used_emojis" />
-          <label for="remember_used_emojis">Remember emojis</label>
+        <div data-closed ref="dialogpanel" class="relative h-auto max-h-screen text-left transition-all duration-150 transform bg-white rounded-lg shadow-xl dark:bg-black dark:text-gray-50 data-closed:translate-y-4 data-closed:opacity-0 sm:my-8 sm:w-full sm:max-w-lg data-closed:sm:translate-y-0 data-closed:sm:scale-95">
+          
+          <div class="flex flex-col max-h-screen pt-4 pb-6 sm:pb-8 sm:pt-4">
+            
+            <div class="flex items-center justify-between px-4 shrink-0 gap-x-8 sm:px-6">
+              <h3 class="text-2xl font-medium text-gray-600 dark:text-gray-300">
+                Settings
+              </h3>
+              <button type="button" @click="closeDialog" class="relative flex items-center justify-center rounded-md cursor-pointer size-10 -right-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-5"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+            
+            <div class="px-4 overflow-y-auto sm:px-6" style="min-height:1px;">
+              
+              <div class="flex flex-wrap items-start gap-8 mt-3">
+                
+                <div>
+                  <label for="theme" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Theme</label>
+                  <select v-model="settings.theme" id="theme" class="mt-1 rounded-md bg-white dark:bg-gray-800 pl-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6">
+                    <option value="system">System</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="emoji-size" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Emoji Size</label>
+                  <select v-model="settings.emoji_size" id="emoji-size" class="mt-1 rounded-md bg-white dark:bg-gray-800 pl-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6">
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large">Large</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="max-hot-emojis" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Max History</label>
+                  <input type="number" id="max-hot-emojis" min="0" max="50" v-model="settings.max_hot_emojis" class="mt-1 w-24 rounded-md bg-white dark:bg-gray-800 px-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 placeholder:text-gray-500 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6" />
+                </div>
+                
+              </div>
+              
+              <div class="flex flex-wrap items-center gap-8 mt-8">
+                
+                <button type="button" @click="clearEmojiHistory" class="flex items-center justify-center h-10 gap-2 px-4 text-sm font-semibold bg-gray-200 rounded-md cursor-pointer darK:text-gray-100 dark:bg-gray-700 shrink-0 whitespace-nowrap">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock-icon lucide-clock size-4"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
+                  Clear history
+                </button>
+                
+                <label for="remember_used_emojis" class="flex items-center gap-2 cursor-pointer">
+                  <input id="remember_used_emojis" type="checkbox" v-model="settings.remember_used_emojis" class="rounded-md" />
+                  Remember used emojis
+                </label>
+          
+              </div>
+              
+              <h3 class="mt-8 text-2xl font-medium text-gray-600 dark:text-gray-300">
+                Controls
+              </h3>
+              
+              <p class="mt-3 text-sm">
+                Click or <span class="font-semibold">Enter</span> to copy an emoji and close the app.
+              </p>
+              <p class="mt-3 text-sm">
+                Hold <span class="font-semibold">Shift</span> to copy multiple emojis. Copied emojis will be displayed at the bottom of the screen. Click any copied emoji from this list to remove it from your clipboard.
+              </p>
+              <p class="mt-3 text-sm">
+                <span class="font-semibold">Tab</span> / <span class="font-semibold">Shift</span> + <span class="font-semibold">Tab</span> to navigate through emojis.
+              </p>
+              <p class="mt-3 text-sm">
+                Hold <span class="font-semibold">Ctrl</span> with click/Enter to add the currently highlighted emoji to your favourites. <span class="font-semibold">Ctrl</span> + click/Enter to remove an emoji from favourites.
+              </p>
+              <p class="mt-3 text-sm">
+                Hold <span class="font-semibold">Alt</span> with click/Enter to remove the currently highlighted emoji from your history.
+              </p>
+              <p class="mt-3 text-sm">
+                <span class="font-semibold">Esc</span> to clear the search box (or close this dialog).
+              </p>
+              <p class="mt-3 text-sm">
+                <span class="font-semibold">Ctrl</span> + <span class="font-semibold">W</span> to close the app.
+              </p>
+              
+            </div>
+            
+          </div>
+          
         </div>
         
-        <select v-model="settings.emoji_size">
-          <option value="small">small</option>
-          <option value="medium">medium</option>
-          <option value="large">large</option>
-        </select>
-        
-        <input type="number" v-model="settings.max_hot_emojis" class="max-w-20" />
-        
-        <select v-model="settings.theme">
-          <option value="system">system</option>
-          <option value="light">light</option>
-          <option value="dark">dark</option>
-        </select>
-        
       </div>
-    </div>
+      
+    </dialog>
     
   </main>
 </template>
