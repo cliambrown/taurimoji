@@ -18,7 +18,6 @@ for (let i=0; i<emojisJson.length; ++i) {
   emojisJson[i].emoji = String.fromCodePoint(...codes);
   emojis.value.push(emojisJson[i]);
 }
-console.log('done parsing codes');
 
 const hotEmojis = ref([]);
 const filter = ref('');
@@ -27,12 +26,16 @@ const selectedEmojis = ref([]);
 
 let dialogOpen = false;
 
+let theme = localStorage.theme ?? 'system';
+let emojiSize = localStorage.emoji_size ?? 'medium';
+let maxHotEmojis = localStorage.max_hot_emojis ?? 10;
+
 const settings = reactive({
-  theme: 'system',
-  emoji_size: 'medium',
+  theme: theme,
+  emoji_size: emojiSize,
   pinned_emojis: [],
   used_emojis: [],
-  max_hot_emojis: 10,
+  max_hot_emojis: maxHotEmojis,
   remember_used_emojis: true,
 });
 
@@ -127,6 +130,10 @@ watch(
 watch(settings, (newSettings) => {
   if (isProxy(newSettings)) newSettings = toRaw(newSettings);
   if (store && storeLoaded) store.set('settings', newSettings);
+  // Save some values to storage for faster loading
+  localStorage.theme = newSettings.theme;
+  localStorage.emoji_size = newSettings.emoji_size;
+  localStorage.max_hot_emojis = newSettings.max_hot_emojis;
 });
 
 function parseIntSafe(val) {
@@ -374,7 +381,6 @@ onBeforeMount(async () => {
       storeLoaded = true;
     });
   }
-  document.body.removeAttribute('style');
   
   window.addEventListener('keydown', handleKeydown);
 });
