@@ -563,7 +563,7 @@ onMounted(() => filterInput.value.focus());
                 Click or <span class="font-semibold">Enter</span> to copy an emoji and close the app.
               </p>
               <p class="mt-3 text-sm">
-                Hold <span class="font-semibold">Shift</span> to copy multiple emojis. Copied emojis will be displayed at the bottom of the screen. Click any copied emoji from this list to remove it from your clipboard.
+                Hold <span class="font-semibold">Shift</span> to copy multiple emojis. Copied emojis will be displayed at the bottom of the screen. Click any copied emoji from this list to remove it from your currently copied emojis.
               </p>
               <p class="mt-3 text-sm">
                 <span class="font-semibold">Tab</span> / <span class="font-semibold">Shift</span> + <span class="font-semibold">Tab</span> to navigate through emojis.

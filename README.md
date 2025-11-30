@@ -2,7 +2,7 @@
 
 A simple emoji picker desktop application.
 
-Uses [the complete v17.0 emoji list](https://unicode.org/emoji/charts/full-emoji-list.html) (with a few taken out because they seemed buggy on my machine).
+Uses [the complete v17.0 emoji list](https://unicode.org/emoji/charts/full-emoji-list.html)
 
 Made by [C. Liam Brown](https://cliambrown.com/)
 
@@ -19,12 +19,13 @@ Made by [C. Liam Brown](https://cliambrown.com/)
 - Type an emoji name to filter the list of emojis
 - Click an emoji to copy it to your clipboard and close the app
 - Shift + click an emoji to copy multiple emojis without closing the app
-- Tab = highlight the next emoji
-- Shift + Tab = highlight the previous emoji
+- Click a copied emoji (in the list at the bottom) to remove it from your currently copied emojis
+- Tab = go to the next emoji
+- Shift + Tab = go to the previous emoji
 - Enter = copy the highlighted emoji and close the app
-- Shift + Enter = copy multiple emojis without closing the app
 - Ctrl + W = close the app
 - Esc = Clear the filter input
+- Alt + click/Enter to remove an emoji from your history
 
 ## Built With
 

@@ -1,6 +1,6 @@
 [package]
 name = "taurimoji"
-version = "0.2.0"
+version = "0.2.1"
 description = "A simple emoji picker desktop application."
 authors = ["C. Liam Brown"]
 edition = "2021"
