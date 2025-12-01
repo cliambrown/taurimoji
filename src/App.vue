@@ -7,15 +7,13 @@ import { load } from '@tauri-apps/plugin-store';
 let store;
 let storeLoaded = false;
 
+const appVersion = ref('[unknown]');
+
 const emojis = ref([]);
 import emojisJson from './emoji.json';
+import { getVersion } from '@tauri-apps/api/app';
 for (let i=0; i<emojisJson.length; ++i) {
   emojisJson[i].id = emojisJson[i].id + '';
-  let codes = [];
-  for (let j=0; j<emojisJson[i].code.length; ++j) {
-    codes.push(parseInt(emojisJson[i].code[j].replace('U+', '0x')));
-  }
-  emojisJson[i].emoji = String.fromCodePoint(...codes);
   emojis.value.push(emojisJson[i]);
 }
 
@@ -26,9 +24,20 @@ const selectedEmojis = ref([]);
 
 let dialogOpen = false;
 
-let theme = localStorage.theme ?? 'system';
-let emojiSize = localStorage.emoji_size ?? 'medium';
-let maxHotEmojis = localStorage.max_hot_emojis ?? 10;
+function getAttrFromLocalStorage(attrName, defaultVal) {
+  if (attrName in localStorage) return localStorage[attrName];
+  return defaultVal;
+}
+
+let theme = getAttrFromLocalStorage('theme', 'system');
+if (theme !== 'light' && theme !== 'dark') theme = 'system';
+let emojiSize = getAttrFromLocalStorage('emoji_size', 'medium');
+if (emojiSize !== 'small' && emojiSize !== 'large') emojiSize = 'medium';
+let maxHotEmojis = getAttrFromLocalStorage('max_hot_emojis', 10);
+maxHotEmojis = parseInt(maxHotEmojis);
+if (isNaN(maxHotEmojis)) maxHotEmojis = 10;
+let showUnsupportedEmojis = getAttrFromLocalStorage('show_unsupported_emojis', false);
+if (showUnsupportedEmojis !== true && showUnsupportedEmojis !== 'true') showUnsupportedEmojis = false;
 
 const settings = reactive({
   theme: theme,
@@ -37,6 +46,7 @@ const settings = reactive({
   used_emojis: [],
   max_hot_emojis: maxHotEmojis,
   remember_used_emojis: true,
+  show_unsupported_emojis: showUnsupportedEmojis,
 });
 
 const filterInput = useTemplateRef('filterinput');
@@ -63,7 +73,12 @@ watch(filter, (filterVal) => {
 const unfilteredPinnedEmojiIds = computed(() => {
   let ids = [];
   for (let i=0; i<settings.pinned_emojis.length; ++i) {
-    if (!settings.pinned_emojis[i].filtered) ids.push(settings.pinned_emojis[i].id);
+    if (
+      !settings.pinned_emojis[i].filtered
+      || (!settings.pinned_emojis[i].supported && !settings.show_unsupported_emojis)
+    ) {
+      ids.push(settings.pinned_emojis[i].id);
+    }
   }
   return ids;
 });
@@ -71,7 +86,12 @@ const unfilteredPinnedEmojiIds = computed(() => {
 const unfilteredHotEmojiIds = computed(() => {
   let ids = [];
   for (let i=0; i<hotEmojisToShow.value.length; ++i) {
-    if (!hotEmojisToShow.value[i].filtered) ids.push(hotEmojisToShow.value[i].id);
+    if (
+      !hotEmojisToShow.value[i].filtered
+      || (!hotEmojisToShow.value[i].supported && !settings.show_unsupported_emojis)
+    ) {
+      ids.push(hotEmojisToShow.value[i].id);
+    }
   }
   return ids;
 });
@@ -79,7 +99,12 @@ const unfilteredHotEmojiIds = computed(() => {
 const unfilteredMainEmojiIds = computed(() => {
   let ids = [];
   for (let i=0; i<emojis.value.length; ++i) {
-    if (!emojis.value[i].filtered) ids.push(emojis.value[i].id);
+    if (
+      !emojis.value[i].filtered
+      || (!emojis.value[i].supported && !settings.show_unsupported_emojis)
+    ) {
+      ids.push(emojis.value[i].id);
+    }
   }
   return ids;
 });
@@ -128,12 +153,13 @@ watch(
 );
 
 watch(settings, (newSettings) => {
-  if (isProxy(newSettings)) newSettings = toRaw(newSettings);
+  newSettings = unwrap(newSettings);
   if (store && storeLoaded) store.set('settings', newSettings);
   // Save some values to storage for faster loading
   localStorage.theme = newSettings.theme;
   localStorage.emoji_size = newSettings.emoji_size;
   localStorage.max_hot_emojis = newSettings.max_hot_emojis;
+  localStorage.show_unsupported_emojis = newSettings.show_unsupported_emojis;
 });
 
 function parseIntSafe(val) {
@@ -145,6 +171,11 @@ function parseIntSafe(val) {
 
 function parseBooleanSafe(val) {
   return !(!val || val === 'false');
+}
+
+function unwrap(val) {
+  if (isProxy(val)) return toRaw(val);
+  return val;
 }
 
 function emojiMatches(emoji, filter) {
@@ -380,6 +411,42 @@ onBeforeMount(async () => {
       resetHighlightedEmoji();
       storeLoaded = true;
     });
+    
+    appVersion.value = await getVersion();
+    
+    setTimeout(() => {
+      // Set up comparison element for supported emojis
+      const compareEl = document.createElement('span');
+      compareEl.style = "position:absolute;visibility:hidden;";
+      compareEl.textContent = '☺️';
+      document.body.appendChild(compareEl);
+      const compareSize = compareEl.getBoundingClientRect();
+      const compareW = compareSize.width;
+      const compareH = compareSize.height;
+      compareEl.remove();
+      const el = document.createElement('span');
+      el.style = "position:absolute;visibility:hidden;";
+      el.textContent = '☺️';
+      document.body.appendChild(el);
+      let elSize;
+      let codes;
+      for (let i=0; i<emojis.value.length; ++i) {
+        emojis.value[i].name = emojis.value[i].name.toLowerCase();
+        // Reprocess certain emojis from codes in case of incorrect display
+        if (emojis.value[i].name.startsWith('⊛')) {
+          codes = [];
+          for (let j=0; j<emojis.value[i].code.length; ++j) {
+            codes.push(parseInt(emojis.value[i].code[j].replace('U+', '0x')));
+          }
+          emojis.value[i].emoji = String.fromCodePoint(...codes);
+        }
+        // Check whether emoji seems to be supported
+        el.textContent = emojis.value[i].emoji;
+        elSize = el.getBoundingClientRect();
+        emojis.value[i].supported = (elSize.width === compareW && elSize.height === compareH);
+      }
+      el.remove();
+    }, 10);
   }
   
   window.addEventListener('keydown', handleKeydown);
@@ -405,14 +472,14 @@ onMounted(() => filterInput.value.focus());
       </div>
     </div>
     
-    <div class="flex flex-wrap items-start justify-center gap-2 py-2 overflow-y-auto grow" style="min-height:1px;">
+    <div class="flex flex-wrap items-start justify-center gap-2 p-2 overflow-y-auto grow" style="min-height:1px;">
       
       <button v-for="(emoji, index) in settings.pinned_emojis"
         type="button"
-        v-show="!emoji.filtered"
+        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
         :id="'emoji-'+emoji.id"
-        :title="emoji.name"
-        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
+        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
+        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -432,10 +499,10 @@ onMounted(() => filterInput.value.focus());
       
       <button v-for="(emoji, index) in hotEmojisToShow"
         type="button"
-        v-show="!emoji.filtered"
+        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
         :id="'emoji-'+emoji.id"
-        :title="emoji.name"
-        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
+        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
+        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -456,10 +523,10 @@ onMounted(() => filterInput.value.focus());
       
       <button v-for="(emoji, index) in emojis"
         type="button"
-        v-show="!emoji.filtered"
+        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
         :id="'emoji-'+emoji.id"
-        :title="emoji.name"
-        class="flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8"
+        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
+        class="flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
         :class="{
           'text-lg': settings.emoji_size === 'small',
           'text-3xl': settings.emoji_size === 'medium',
@@ -507,18 +574,17 @@ onMounted(() => filterInput.value.focus());
         
         <div data-closed ref="dialogpanel" class="relative h-auto max-h-screen text-left transition-all duration-150 transform bg-white rounded-lg shadow-xl dark:bg-black dark:text-gray-50 data-closed:translate-y-4 data-closed:opacity-0 sm:my-8 sm:w-full sm:max-w-lg data-closed:sm:translate-y-0 data-closed:sm:scale-95">
           
-          <div class="flex flex-col max-h-screen pt-4 pb-6 sm:pb-8 sm:pt-4">
+          <div class="flex flex-col max-h-[calc(100vh-(--spacing(6)))] pt-4 pb-6 sm:pb-8 sm:pt-4">
             
-            <div class="flex items-center justify-between px-4 shrink-0 gap-x-8 sm:px-6">
+            <button type="button" @click="closeDialog" class="absolute flex items-center justify-center rounded-md cursor-pointer size-10 top-4 right-4">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-5"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+            
+            <div class="px-4 overflow-y-auto sm:px-6" style="min-height:1px;">
+            
               <h3 class="text-2xl font-medium text-gray-600 dark:text-gray-300">
                 Settings
               </h3>
-              <button type="button" @click="closeDialog" class="relative flex items-center justify-center rounded-md cursor-pointer size-10 -right-2">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-5"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-              </button>
-            </div>
-            
-            <div class="px-4 overflow-y-auto sm:px-6" style="min-height:1px;">
               
               <div class="flex flex-wrap items-start gap-8 mt-3">
                 
@@ -561,6 +627,15 @@ onMounted(() => filterInput.value.focus());
           
               </div>
               
+              <div class="flex flex-wrap items-center gap-8 mt-8">
+                
+                <label for="show_unsupported_emojis" class="flex items-center gap-2 cursor-pointer">
+                  <input id="show_unsupported_emojis" type="checkbox" v-model="settings.show_unsupported_emojis" class="rounded-md" />
+                  Show unsupported emojis (may not be accurate)
+                </label>
+          
+              </div>
+              
               <h3 class="mt-8 text-2xl font-medium text-gray-600 dark:text-gray-300">
                 Controls
               </h3>
@@ -586,6 +661,20 @@ onMounted(() => filterInput.value.focus());
               <p class="mt-3 text-sm">
                 <span class="font-semibold">Ctrl</span> + <span class="font-semibold">W</span> to close the app.
               </p>
+              
+              <h3 class="mt-8 text-2xl font-medium text-gray-600 dark:text-gray-300">
+                About
+              </h3>
+              
+              <p class="mt-3 text-sm">
+                App version: {{ appVersion }}
+              </p>
+              
+              <p class="mt-3 text-sm">
+                Source code: <a href="https://github.com/cliambrown/taurimoji" target="_blank">github.com/cliambrown/taurimoji</a>
+              </p>
+              
+              <br></br>
               
             </div>
             

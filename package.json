@@ -1,7 +1,7 @@
 {
   "name": "taurimoji",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,8 +12,8 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.17",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.3",
     "@tauri-apps/plugin-store": "^2.4.1",
     "@tauri-apps/plugin-window-state": "^2.4.1",
     "copy-text-to-clipboard": "^3.2.2",

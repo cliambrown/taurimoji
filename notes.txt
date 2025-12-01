@@ -1,0 +1,33 @@
+Emojis that may not be properly saved in emoji.json:
+
+hot beverage
+anchor
+umbrella with rain drops
+high voltage
+wheelchair symbol
+Aries
+Taurus
+Gemini
+Cancer
+Leo
+Virgo
+Libra
+Scorpio
+Sagittarius
+Capricorn
+Aquarius
+Pisces
+Ophiuchus
+transgender symbol
+black medium-small square
+white medium-small square
+
+⊛
+distorted face
+fight cloud
+hairy creature
+ballet dancer
+orca
+landslide
+trombone
+treasure chest

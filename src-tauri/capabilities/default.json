@@ -7,8 +7,8 @@
   ],
   "permissions": [
     "core:default",
-    "opener:default",
     "process:default",
-    "store:default"
+    "store:default",
+    "shell:default"
   ]
 }
