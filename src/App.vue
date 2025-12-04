@@ -3,30 +3,69 @@ import { ref, reactive, computed, watch, useTemplateRef, onBeforeMount, onBefore
 import copy from 'copy-text-to-clipboard';
 import { exit } from '@tauri-apps/plugin-process';
 import { load } from '@tauri-apps/plugin-store';
+// import { getVersion } from '@tauri-apps/api/app';
 
-let store;
-let storeLoaded = false;
+/**
+ * Variables
+ */
 
-const appVersion = ref('[unknown]');
-
-const emojis = ref([]);
-import emojisJson from './emoji.json';
-import { getVersion } from '@tauri-apps/api/app';
-for (let i=0; i<emojisJson.length; ++i) {
-  emojisJson[i].id = emojisJson[i].id + '';
-  emojis.value.push(emojisJson[i]);
-}
-
+// Reactive
+const emojis = ref({});
 const hotEmojis = ref([]);
 const filter = ref('');
-const highlightedEmojiId = ref('');
+const highlightedEmojiIndex = ref(0);
 const selectedEmojis = ref([]);
 
+// Not reactive
+const appVersion = '1.0.0';
+let emojiNames = [];
+let store = null;
+let storeLoaded = false;
 let dialogOpen = false;
 
-function getAttrFromLocalStorage(attrName, defaultVal) {
-  if (attrName in localStorage) return localStorage[attrName];
-  return defaultVal;
+// Element refs
+const filterInput = useTemplateRef('filterinput');
+const dialog = useTemplateRef('dialog');
+const dialogBackdrop = useTemplateRef('dialogbackdrop');
+const dialogPanel = useTemplateRef('dialogpanel');
+
+/**
+ * Setup
+ */
+
+import emojisJson from './emojis-with-modifiers.json';
+
+const skinToneKeys = ['lst','mlst','mst','mdst','dst'];
+
+for (let i=0; i<emojisJson.length; ++i) {
+  emojisJson[i].searchable_text = (emojisJson[i].name + ' ' + emojisJson[i].category + ' ' + emojisJson[i].category).toLowerCase();
+  emojisJson[i].filtered = false;
+  emojisJson[i].supported = true;
+  let altIndices = {};
+  if (emojisJson[i].alts.length) {
+    for (let j=0; j<emojisJson[i].alts.length; ++j) {
+      emojisJson[i].alts[j].supported = true;
+    }
+    for (const stk1 of skinToneKeys) {
+      stk2Loop: for (const stk2 of skinToneKeys) {
+        for (let j=0; j<emojisJson[i].alts.length; ++j) {
+          if (emojisJson[i].alts[j].st1 === stk1 && emojisJson[i].alts[j].st2 === stk2) {
+            altIndices[stk1+'.'+stk2] = j;
+            continue stk2Loop;
+          }
+        }
+        for (let j=0; j<emojisJson[i].alts.length; ++j) {
+          if (emojisJson[i].alts[j].st1 === stk1 && emojisJson[i].alts[j].st2 === null) {
+            altIndices[stk1+'.'+stk2] = j;
+            continue stk2Loop;
+          }
+        }
+      }
+    }
+    emojisJson[i].alt_indices = altIndices;
+  }
+  emojis.value[emojisJson[i].name] = emojisJson[i];
+  emojiNames.push(emojisJson[i].name);
 }
 
 let theme = getAttrFromLocalStorage('theme', 'system');
@@ -46,103 +85,229 @@ const settings = reactive({
   used_emojis: [],
   max_hot_emojis: maxHotEmojis,
   remember_used_emojis: true,
-  show_unsupported_emojis: showUnsupportedEmojis,
+  show_unsupported_emojis: false,
+  st1: null,
+  st2: null,
 });
 
-const filterInput = useTemplateRef('filterinput');
+onBeforeMount(async () => {
+  
+  store = await load('store.json', { autoSave: true });
+  if (store) {
+    const storedSettings = await store.get('settings');
+    if (storedSettings) {
+      if (storedSettings.theme) settings.theme = storedSettings.theme;
+      if (storedSettings.pinned_emojis) settings.pinned_emojis = storedSettings.pinned_emojis;
+      if (storedSettings.max_hot_emojis) settings.max_hot_emojis = parseIntSafe(storedSettings.max_hot_emojis);
+      if (storedSettings.emoji_size) settings.emoji_size = storedSettings.emoji_size;
+      if (storedSettings.st1) settings.st1 = storedSettings.st1;
+      if (storedSettings.st2) settings.st2 = storedSettings.st2;
+      if (storedSettings.hasOwnProperty('remember_used_emojis')) {
+        settings.remember_used_emojis = parseBooleanSafe(storedSettings.remember_used_emojis);
+      }
+      if (storedSettings.used_emojis) {
+        settings.used_emojis = storedSettings.used_emojis.slice(0, 100);
+        // Measure emoji hotness based on frequency & recency of use
+        let usedEmojiData = [];
+        usedEmojiLoop: for (let i=0; i<storedSettings.used_emojis.length; ++i) {
+          for (let j=0; j<usedEmojiData.length; ++j) {
+            if (emojiDataEquals(storedSettings.used_emojis[i], usedEmojiData[j])) {
+              usedEmojiData[j].hotness += storedSettings.used_emojis.length - i;
+              continue usedEmojiLoop;
+            }
+          }
+          usedEmojiData.push({
+            name: storedSettings.used_emojis[i].name,
+            modifier: storedSettings.used_emojis[i].modifier,
+            hotness: storedSettings.used_emojis.length - i,
+          });
+        }
+        usedEmojiData.sort((a, b) => b.hotness - a.hotness);
+        hotEmojis.value = usedEmojiData;
+      }
+    }
+    nextTick(() => storeLoaded = true);
+  }
+  
+  // appVersion.value = await getVersion();
+      
+  setTimeout(() => {
+    // Set up comparison element for supported emojis
+    const compareEl = document.createElement('span');
+    compareEl.style = "position:absolute;visibility:hidden;";
+    compareEl.textContent = '☺️';
+    document.body.appendChild(compareEl);
+    const compareSize = compareEl.getBoundingClientRect();
+    const compareW = compareSize.width;
+    const compareH = compareSize.height;
+    compareEl.remove();
+    const el = document.createElement('span');
+    el.style = "position:absolute;visibility:hidden;";
+    el.textContent = '☺️';
+    document.body.appendChild(el);
+    let elSize;
+    let codes;
+    let emoji;
+    let supported;
+    for (let i=0; i<emojiNames.length; ++i) {
+      emoji = unwrap(emojis.value[emojiNames[i]]);
+      el.textContent = emoji.emoji;
+      elSize = el.getBoundingClientRect();
+      supported = (elSize.width === compareW && elSize.height === compareH);
+      if (!supported) {
+        // Try recreating emoji from codes in case that works
+        codes = [];
+        for (let j=0; j<emoji.code.length; ++j) {
+          codes.push(parseInt(emoji.code[j].replace('U+', '0x')));
+        }
+        emojis.value[emojiNames[i]].emoji = String.fromCodePoint(...codes);
+        el.textContent = emojis.value[emojiNames[i]].emoji;
+        elSize = el.getBoundingClientRect();
+        supported = (elSize.width === compareW && elSize.height === compareH);
+      } else {
+        supported = true;
+      }
+      emojis.value[emojiNames[i]].supported = supported;
+      for (let k=0; k<emoji.alts.length; ++k) {
+        el.textContent = emoji.alts[k].emoji;
+        elSize = el.getBoundingClientRect();
+        supported = (elSize.width === compareW && elSize.height === compareH);
+        if (!supported) {
+          // Try recreating emoji from codes in case that works
+          codes = [];
+          for (let j=0; j<emoji.alts[k].code.length; ++j) {
+            codes.push(parseInt(emoji.alts[k].code[j].replace('U+', '0x')));
+          }
+          emojis.value[emojiNames[i]].alts[k].emoji = String.fromCodePoint(...codes);
+          el.textContent = emojis.value[emojiNames[i]].alts[k].emoji;
+          elSize = el.getBoundingClientRect();
+          supported = (elSize.width === compareW && elSize.height === compareH);
+        } else {
+          supported = true;
+        }
+        emojis.value[emojiNames[i]].alts[k].supported = supported;
+      }
+    }
+    el.remove();
+  }, 10);
 
-const dialog = useTemplateRef('dialog');
-const dialogBackdrop = useTemplateRef('dialogbackdrop');
-const dialogPanel = useTemplateRef('dialogpanel');
+  window.addEventListener('keydown', handleKeydown);
+});
 
-const hotEmojisToShow = computed(() => {
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown);
+});
+
+onMounted(() => filterInput.value.focus());
+
+/**
+ * Computed
+ */
+
+const unfilteredEmojis = computed(() => {
   let r = [];
-  const maxLength = Math.min(hotEmojis.value.length, settings.max_hot_emojis);
-  for (let i=0; i<maxLength; ++i) {
-    hotEmojis.value[i].id = 'h-'+(i+1);
-    r.push(hotEmojis.value[i]);
+  let emoji;
+  const modifier = settings.st1 ? settings.st1+'.'+(settings.st2 ?? settings.st1) : false;
+  for (let i=0; i<emojiNames.length; ++i) {
+    emoji = emojis.value[emojiNames[i]];
+    if (emoji.filtered) continue;
+    if (modifier && emoji.alts.length) {
+      if (settings.show_unsupported_emojis) {
+        r.push({ name: emojiNames[i], modifier: modifier, pinned: false, hot: false });
+      } else {
+        if (emoji.alts[emoji.alt_indices[modifier]].supported) {
+          r.push({ name: emojiNames[i], modifier: modifier, pinned: false, hot: false });
+        } else if (emoji.supported) { // Use base emoji if supported
+          r.push({ name: emojiNames[i], modifier: false, pinned: false, hot: false });
+        }
+      }
+    } else if (!(!emoji.supported && !settings.show_unsupported_emojis)) {
+      r.push({ name: emojiNames[i], modifier: false, pinned: false, hot: false });
+    }
   }
   return r;
 });
 
-watch(filter, (filterVal) => {
-  filterEmojis(filterVal);
-  resetHighlightedEmoji();
-});
-
-const unfilteredPinnedEmojiIds = computed(() => {
-  let ids = [];
+const unfilteredPinnedEmojis = computed(() => {
+  let r = [];
+  let emoji;
   for (let i=0; i<settings.pinned_emojis.length; ++i) {
-    if (
-      !settings.pinned_emojis[i].filtered
-      || (!settings.pinned_emojis[i].supported && !settings.show_unsupported_emojis)
-    ) {
-      ids.push(settings.pinned_emojis[i].id);
+    emoji = emojis.value[settings.pinned_emojis[i].name];
+    if (!emoji || emoji.filtered) continue;
+    if (settings.pinned_emojis[i].modifier) {
+      if (!(
+        !emoji.alts[emoji.alt_indices[settings.pinned_emojis[i].modifier]].supported
+        && !settings.show_unsupported_emojis
+      )) {
+        r.push({ name: emoji.name, modifier: settings.pinned_emojis[i].modifier, pinned: true, hot: false });
+      }
+    } else {
+      if (!(!emoji.supported && !settings.show_unsupported_emojis)) {
+        r.push({ name: emoji.name, modifier: settings.pinned_emojis[i].modifier, pinned: true, hot: false });
+      }
     }
   }
-  return ids;
+  return r;
 });
 
-const unfilteredHotEmojiIds = computed(() => {
-  let ids = [];
-  for (let i=0; i<hotEmojisToShow.value.length; ++i) {
-    if (
-      !hotEmojisToShow.value[i].filtered
-      || (!hotEmojisToShow.value[i].supported && !settings.show_unsupported_emojis)
-    ) {
-      ids.push(hotEmojisToShow.value[i].id);
+const maxHotEmojisInt = computed(() => parseIntSafe(settings.max_hot_emojis));
+
+const unfilteredHotEmojis = computed(() => {
+  let r = [];
+  let emoji;
+  const maxLength = Math.min(hotEmojis.value.length, maxHotEmojisInt.value);
+  for (let i=0; i<maxLength; ++i) {
+    emoji = emojis.value[hotEmojis.value[i].name];
+    if (!emoji || emoji.filtered) continue;
+    if (hotEmojis.value[i].modifier) {
+      if (!(
+        !emoji.alts[emoji.alt_indices[hotEmojis.value[i].modifier]].supported
+        && !settings.show_unsupported_emojis
+      )) {
+        r.push({ name: emoji.name, modifier: hotEmojis.value[i].modifier, pinned: false, hot: true });
+      }
+    } else {
+      if (!(!emoji.supported && !settings.show_unsupported_emojis)) {
+        r.push({ name: emoji.name, modifier: hotEmojis.value[i].modifier, pinned: false, hot: true });
+      }
     }
   }
-  return ids;
+  return r;
 });
 
-const unfilteredMainEmojiIds = computed(() => {
-  let ids = [];
-  for (let i=0; i<emojis.value.length; ++i) {
-    if (
-      !emojis.value[i].filtered
-      || (!emojis.value[i].supported && !settings.show_unsupported_emojis)
-    ) {
-      ids.push(emojis.value[i].id);
-    }
-  }
-  return ids;
-});
-
-const unfilteredEmojiIds = computed(() => {
-  return unfilteredPinnedEmojiIds.value.concat(
-    unfilteredHotEmojiIds.value,
-    unfilteredMainEmojiIds.value
+const allUnfilteredEmojis = computed(() => {
+  return unfilteredPinnedEmojis.value.concat(
+    unfilteredHotEmojis.value,
+    unfilteredEmojis.value
   );
-});
-
-watch(highlightedEmojiId, (emojiId) => {
-  const el = document.getElementById('emoji-'+emojiId);
-  if (el) el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
 const selectedText = computed(() => {
   let r = '';
+  let emoji;
   for (let i=0; i<selectedEmojis.value.length; ++i) {
-    r = r + selectedEmojis.value[i].emoji;
+    emoji = unwrap(emojis.value[selectedEmojis.value[i].name]);
+    if (selectedEmojis.value[i].modifier) {
+      r = r + emoji.alts[emoji.alt_indices[selectedEmojis.value[i].modifier]].emoji;
+    } else {
+      r = r + emoji.emoji;
+    }
   }
   return r;
 });
 
-const highlightedEmoji = computed(() => {
-  for (let i=0; i<settings.pinned_emojis.length; ++i) {
-    if (settings.pinned_emojis[i].id === highlightedEmojiId.value)
-      return settings.pinned_emojis[i];
-  }
-  for (let i=0; i<hotEmojisToShow.value.length; ++i) {
-    if (hotEmojisToShow.value[i].id === highlightedEmojiId.value)
-      return hotEmojisToShow.value[i];
-  }
-  for (let i=0; i<emojis.value.length; ++i) {
-    if (emojis.value[i].id === highlightedEmojiId.value)
-      return emojis.value[i];
-  }
-  return null;
+/**
+ * Watchers
+ */
+
+watch(filter, (filterVal) => {
+  filterEmojis();
+  nextTick(() => highlightedEmojiIndex.value = 0);
+});
+
+watch(highlightedEmojiIndex, (emojiIndex) => {
+  const el = document.getElementById('emoji-'+emojiIndex);
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
 watch(selectedText, (text) => copy(text));
@@ -150,6 +315,17 @@ watch(selectedText, (text) => copy(text));
 watch(
   () => settings.theme,
   (newTheme) => applyTheme(newTheme)
+);
+
+watch(
+  () => settings.st1,
+  (newSt1) => {
+    if (newSt1) {
+      if (!settings.st2) settings.st2 = newSt1
+    } else if (settings.st2) {
+      settings.st2 = null;
+    }
+  }
 );
 
 watch(settings, (newSettings) => {
@@ -160,7 +336,13 @@ watch(settings, (newSettings) => {
   localStorage.emoji_size = newSettings.emoji_size;
   localStorage.max_hot_emojis = newSettings.max_hot_emojis;
   localStorage.show_unsupported_emojis = newSettings.show_unsupported_emojis;
+  localStorage.st1 = newSettings.st1;
+  localStorage.st2 = newSettings.st2;
 });
+
+/**
+ * Functions
+ */
 
 function parseIntSafe(val) {
   if (!val) return 0;
@@ -177,25 +359,35 @@ function unwrap(val) {
   if (isProxy(val)) return toRaw(val);
   return val;
 }
+ 
+function getAttrFromLocalStorage(attrName, defaultVal) {
+  if (attrName in localStorage) return localStorage[attrName];
+  return defaultVal;
+}
 
-function emojiMatches(emoji, filter) {
-  if (!filter) return true;
-  return (
-    emoji.name.indexOf(filter) > -1
-    || emoji.subcategory.indexOf(filter) > -1
-  );
+function emojiDataEquals(emojiData1, emojiData2) {
+  return emojiData1.name === emojiData2.name && emojiData1.modifier === emojiData2.modifier;
 }
 
 function filterEmojis() {
   const filterStr = filter.value.trim().toLowerCase();
-  for (let i=0; i<settings.pinned_emojis.length; ++i) {
-    settings.pinned_emojis[i].filtered = !emojiMatches(settings.pinned_emojis[i], filterStr);
+  for (let i=0; i<emojiNames.length; ++i) {
+    emojis.value[emojiNames[i]].filtered = (
+      !!filterStr
+      && emojis.value[emojiNames[i]].searchable_text.indexOf(filterStr) < 0
+    );
   }
-  for (let i=0; i<hotEmojisToShow.value.length; ++i) {
-    hotEmojisToShow.value[i].filtered = !emojiMatches(hotEmojisToShow.value[i], filterStr);
+}
+
+function emojiNav(forward = true, steps = 1) {
+  if (!allUnfilteredEmojis.value.length) {
+    highlightedEmojiIndex.value = 0;
+    return false;
   }
-  for (let i=0; i<emojis.value.length; ++i) {
-    emojis.value[i].filtered = !emojiMatches(emojis.value[i], filterStr);
+  if (forward) {
+    highlightedEmojiIndex.value += Math.min(steps, allUnfilteredEmojis.value.length - 1 - highlightedEmojiIndex.value);
+  } else {
+    highlightedEmojiIndex.value -= Math.min(steps, highlightedEmojiIndex.value);
   }
 }
 
@@ -207,89 +399,89 @@ function applyTheme(theme) {
   );
 }
 
-function copyEmoji(emoji) {
-  copy(emoji.emoji);
-  addEmojiToHistory(emoji);
+function copyEmoji(emojiData) {
+  const emoji = unwrap(emojis.value[emojiData.name]);
+  if (emojiData.modifier) {
+    copy(emoji.alts[emoji.alt_indices[emojiData.modifier]].emoji);
+  } else {
+    copy(emoji.emoji);
+  }
+  addEmojiToHistory(emojiData);
   setTimeout(() => exit(0), 10);
 }
 
-function addEmojiToSelected(emoji) {
-  selectedEmojis.value.push(emoji);
-  addEmojiToHistory(emoji);
-  highlightedEmojiId.value = emoji.id;
+function addEmojiToSelected(emojiData, emojiIndex) {
+  selectedEmojis.value.push({ name: emojiData.name, modifier: emojiData.modifier });
+  addEmojiToHistory(emojiData);
+  highlightedEmojiIndex.value = emojiIndex;
 }
 
 function removeSelectedEmoji(index) {
   selectedEmojis.value.splice(index, 1);
 }
 
-function pinEmoji(sourceEmoji) {
-  let isAlreadyPinned = false;
-  // Clone emoji to avoid changing id
-  let emoji = {...sourceEmoji};
-  let id = sourceEmoji.id.match(/[\d]+$/);
-  emoji.id = 'p-'+id;
+function pinEmoji(emojiData, emojiIndex) {
+  let wasAlreadyPinned = false;
   for (let i=0; i<settings.pinned_emojis.length; ++i) {
-    if (settings.pinned_emojis[i].emoji === emoji.emoji)  {
+    if (emojiDataEquals(settings.pinned_emojis[i], emojiData)) {
       settings.pinned_emojis.splice(i, 1);
-      settings.pinned_emojis.unshift(emoji);
-      isAlreadyPinned = true;
+      wasAlreadyPinned = true;
       break;
     }
   }
-  if (!isAlreadyPinned) settings.pinned_emojis.unshift(emoji);
-  filterEmojis();
-  highlightedEmojiId.value = sourceEmoji.id;
+  if (!wasAlreadyPinned) settings.pinned_emojis.unshift({ name: emojiData.name, modifier: emojiData.modifier });
+  highlightedEmojiIndex.value = emojiIndex;
+  if (!emojiData.pinned) emojiNav(!wasAlreadyPinned);
 }
 
-function unpinEmoji(index) {
-  settings.pinned_emojis.splice(index, 1);
-  filterEmojis();
-}
-
-function emojiNav(forward = true) {
-  if (!unfilteredEmojiIds.value.length) {
-    highlightedEmojiId.value = '';
-    return false;
+function addEmojiToHistory(emojiData) {
+  if (parseBooleanSafe(settings.remember_used_emojis)) {
+    settings.used_emojis.unshift({ name: emojiData.name, modifier: emojiData.modifier });
   }
-  let idIndex = unfilteredEmojiIds.value.indexOf(highlightedEmojiId.value);
-  if (idIndex < 0) {
-    highlightedEmojiId.value = unfilteredEmojiIds.value[0];
-  } else {
-    if (forward) {
-      if (idIndex < unfilteredEmojiIds.value.length - 1) idIndex++;
-    } else {
-      if (idIndex > 0) idIndex--;
+}
+
+function removeEmojiFromHistory(emojiData, emojiIndex) {
+  hotEmojis.value = hotEmojis.value.filter(hotEmoji => !emojiDataEquals(hotEmoji, emojiData));
+  settings.used_emojis = settings.used_emojis.filter(usedEmoji => !emojiDataEquals(usedEmoji, emojiData));
+  highlightedEmojiIndex.value = emojiIndex;
+  nextTick(() => {
+    if (highlightedEmojiIndex.value > allUnfilteredEmojis.value.length) {
+      highlightedEmojiIndex.value = Math.max(0, allUnfilteredEmojis.value.length - 1);
     }
-    highlightedEmojiId.value = unfilteredEmojiIds.value[idIndex];
-  }
-}
-
-function resetHighlightedEmoji() {
-  if (unfilteredEmojiIds.value.length) highlightedEmojiId.value = unfilteredEmojiIds.value[0];
-  else highlightedEmojiId.value = '';
-}
-
-function addEmojiToHistory(emoji) {
-  if (parseBooleanSafe(settings.remember_used_emojis))
-    settings.used_emojis.unshift(emoji.emoji);
-}
-
-function removeEmojiFromHistory(emoji, index) {
-  settings.used_emojis = settings.used_emojis.filter(usedEmoji => usedEmoji !== emoji.emoji);
-  hotEmojis.value.splice(index, 1);
-  filterEmojis();
+  });
 }
 
 function clearEmojiHistory() {
-  settings.used_emojis = [];
   hotEmojis.value = [];
-  filterEmojis();
+  settings.used_emojis = [];
+  nextTick(() => {
+    if (highlightedEmojiIndex.value > allUnfilteredEmojis.value.length) {
+      highlightedEmojiIndex.value = Math.max(0, allUnfilteredEmojis.value.length - 1);
+    }
+  });
 }
 
 function clearFilterInput() {
   filter.value = '';
   filterInput.value.focus();
+}
+
+function showDialog() {
+  dialogOpen = true;
+  dialog.value.show();
+  setTimeout(() => {
+    dialogBackdrop.value.removeAttribute('data-closed');
+    dialogPanel.value.removeAttribute('data-closed');
+  }, 10);
+}
+
+function closeDialog() {
+  dialogOpen = false;
+  dialogBackdrop.value.setAttribute('data-closed', 'true');
+  dialogPanel.value.setAttribute('data-closed', 'true');
+  setTimeout(() => {
+    dialog.value.close();
+  }, 160); 
 }
 
 function handleKeydown(event) {
@@ -314,149 +506,22 @@ function handleKeydown(event) {
     case 13: // Enter
       event.preventDefault();
       if (!dialogOpen) {
-        if (highlightedEmojiId.value) {
-          if (event.shiftKey && !event.ctrlKey && !event.altKey) { // Shift
-            if (highlightedEmoji.value) addEmojiToSelected(highlightedEmoji.value);
-          } else if (event.ctrlKey && !event.shiftKey && !event.altKey) { // Ctrl
-            if (/^p-/.test(highlightedEmojiId.value)) { // Pinned
-              let index = -1;
-              for (let i=0; i<settings.pinned_emojis.length; ++i) {
-                if (settings.pinned_emojis[i].id === highlightedEmojiId.value) {
-                  index = i;
-                  break;
-                }
-              }
-              if (index > -1) unpinEmoji(index);
-            } else {
-              if (highlightedEmoji.value) pinEmoji(highlightedEmoji.value);
-            }
-          } else if (event.altKey && !event.shiftKey && !event.ctrlKey) { // Alt
-            if (/^h-/.test(highlightedEmojiId.value)) {
-              let index = -1;
-              for (let i=0; i<hotEmojis.value.length; ++i) {
-                if (hotEmojis.value[i].id === highlightedEmojiId.value) {
-                  index = i;
-                  break;
-                }
-              }
-              if (index > -1 && highlightedEmoji.value) removeEmojiFromHistory(highlightedEmoji.value, index);
-            }
-          } else if (!event.shiftKey && !event.ctrlKey && !event.altKey) { // No modifiers
-            if (highlightedEmoji.value) copyEmoji(highlightedEmoji.value);
-          }
+        if (highlightedEmojiIndex.value > allUnfilteredEmojis.value.length - 1) return false;
+        const emojiData = allUnfilteredEmojis.value[highlightedEmojiIndex.value];
+        if (!event.shiftKey && !event.ctrlKey && !event.altKey) {
+          copyEmoji(emojiData);
+        } else if (event.shiftKey && !event.ctrlKey && !event.altKey) {
+          addEmojiToSelected(emojiData, highlightedEmojiIndex.value);
+        } else if (!event.shiftKey && event.ctrlKey && !event.altKey) {
+          pinEmoji(emojiData, highlightedEmojiIndex.value);
+          console.log(emojiData);
+        } else if (!event.shiftKey && !event.ctrlKey && event.altKey) {
+          removeEmojiFromHistory(emojiData, highlightedEmojiIndex.value);
         }
       }
       break;
   }
 }
-
-function showDialog() {
-  dialogOpen = true;
-  dialog.value.show();
-  setTimeout(() => {
-    dialogBackdrop.value.removeAttribute('data-closed');
-    dialogPanel.value.removeAttribute('data-closed');
-  }, 10);
-}
-
-function closeDialog() {
-  dialogOpen = false;
-  dialogBackdrop.value.setAttribute('data-closed', 'true');
-  dialogPanel.value.setAttribute('data-closed', 'true');
-  setTimeout(() => {
-    dialog.value.close();
-  }, 160);
-  
-}
-
-onBeforeMount(async () => {
-  
-  store = await load('store.json', { autoSave: true });
-  if (store) {
-    const storedSettings = await store.get('settings');
-    if (storedSettings) {
-      if (storedSettings.theme) settings.theme = storedSettings.theme;
-      if (storedSettings.pinned_emojis) {
-        for (let i=0; i<storedSettings.pinned_emojis.length; ++i) {
-          storedSettings.pinned_emojis[i].id = 'p-'+(i+1);
-          settings.pinned_emojis.push(storedSettings.pinned_emojis[i]);
-        }
-      }
-      if (storedSettings.max_hot_emojis) settings.max_hot_emojis = parseIntSafe(storedSettings.max_hot_emojis);
-      if (storedSettings.emoji_size) settings.emoji_size = storedSettings.emoji_size;
-      if (storedSettings.hasOwnProperty('remember_used_emojis')) {
-        settings.remember_used_emojis = parseBooleanSafe(storedSettings.remember_used_emojis);
-      }
-      if (storedSettings.used_emojis) {
-        settings.used_emojis = storedSettings.used_emojis;
-        // Measure emoji hotness based on frequency & recency of use
-        let usedEmojiIndices = [];
-        for (let i=0; i<storedSettings.used_emojis.length; ++i) {
-          for (let j=0; j<emojis.value.length; ++j) {
-            if (storedSettings.used_emojis[i] === emojis.value[j].emoji) {
-              if (usedEmojiIndices.indexOf(j) < 0) usedEmojiIndices.push(j);
-              emojis.value[j].hotness = (emojis.value[j].hotness ?? 0) + (storedSettings.used_emojis.length - i);
-              break;
-            }
-          }
-        }
-        usedEmojiIndices.sort((a, b) => emojis.value[b].hotness - emojis.value[a].hotness);
-        for (let i=0; i<usedEmojiIndices.length; ++i) {
-          hotEmojis.value.push({...emojis.value[usedEmojiIndices[i]]});
-        }
-      }
-    }
-    nextTick(() => {
-      filterEmojis();
-      resetHighlightedEmoji();
-      storeLoaded = true;
-    });
-    
-    appVersion.value = await getVersion();
-    
-    setTimeout(() => {
-      // Set up comparison element for supported emojis
-      const compareEl = document.createElement('span');
-      compareEl.style = "position:absolute;visibility:hidden;";
-      compareEl.textContent = '☺️';
-      document.body.appendChild(compareEl);
-      const compareSize = compareEl.getBoundingClientRect();
-      const compareW = compareSize.width;
-      const compareH = compareSize.height;
-      compareEl.remove();
-      const el = document.createElement('span');
-      el.style = "position:absolute;visibility:hidden;";
-      el.textContent = '☺️';
-      document.body.appendChild(el);
-      let elSize;
-      let codes;
-      for (let i=0; i<emojis.value.length; ++i) {
-        emojis.value[i].name = emojis.value[i].name.toLowerCase();
-        // Reprocess certain emojis from codes in case of incorrect display
-        if (emojis.value[i].name.startsWith('⊛')) {
-          codes = [];
-          for (let j=0; j<emojis.value[i].code.length; ++j) {
-            codes.push(parseInt(emojis.value[i].code[j].replace('U+', '0x')));
-          }
-          emojis.value[i].emoji = String.fromCodePoint(...codes);
-        }
-        // Check whether emoji seems to be supported
-        el.textContent = emojis.value[i].emoji;
-        elSize = el.getBoundingClientRect();
-        emojis.value[i].supported = (elSize.width === compareW && elSize.height === compareH);
-      }
-      el.remove();
-    }, 10);
-  }
-  
-  window.addEventListener('keydown', handleKeydown);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown);
-});
-
-onMounted(() => filterInput.value.focus());
 
 </script>
 
@@ -472,96 +537,70 @@ onMounted(() => filterInput.value.focus());
       </div>
     </div>
     
-    <div class="flex flex-wrap items-start justify-center gap-2 p-2 overflow-y-auto grow" style="min-height:1px;">
-      
-      <button v-for="(emoji, index) in settings.pinned_emojis"
-        type="button"
-        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
-        :id="'emoji-'+emoji.id"
-        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
-        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
-        :class="{
-          'text-lg': settings.emoji_size === 'small',
-          'text-3xl': settings.emoji_size === 'medium',
-          'text-6xl': settings.emoji_size === 'large',
-          'bg-gray-300 dark:bg-gray-600 ring ring-gray-500': emoji.id === highlightedEmojiId
-        }"
-        @click.exact="copyEmoji(emoji)"
-        @click.shift.exact="addEmojiToSelected(emoji, index)"
-        @click.ctrl.exact="unpinEmoji(index)"
-        tabindex="-1"
-        >
-        <div class="absolute top-0 flex items-center justify-center text-yellow-400 rounded-full size-4 -right-1">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star size-3"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>
-        </div>
-        {{ emoji.emoji }}
-      </button>
-      
-      <button v-for="(emoji, index) in hotEmojisToShow"
-        type="button"
-        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
-        :id="'emoji-'+emoji.id"
-        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
-        class="relative flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
-        :class="{
-          'text-lg': settings.emoji_size === 'small',
-          'text-3xl': settings.emoji_size === 'medium',
-          'text-6xl': settings.emoji_size === 'large',
-          'bg-gray-300 dark:bg-gray-600 ring ring-gray-500': emoji.id === highlightedEmojiId
-        }"
-        @click.exact="copyEmoji(emoji)"
-        @click.shift.exact="addEmojiToSelected(emoji, index)"
-        @click.ctrl.exact="pinEmoji(emoji)"
-        @click.alt.exact="removeEmojiFromHistory(emoji, index)"
-        tabindex="-1"
-        >
-        <div class="absolute top-0 flex items-center justify-center text-gray-500 rounded-full size-4 dark:text-gray-300 -right-1">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock-icon lucide-clock size-3"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
-        </div>
-        {{ emoji.emoji }}
-      </button>
-      
-      <button v-for="(emoji, index) in emojis"
-        type="button"
-        v-show="!(emoji.filtered || (!emoji.supported && !settings.show_unsupported_emojis))"
-        :id="'emoji-'+emoji.id"
-        :title="emoji.name + (emoji.supported ? ' supported' : ' unsupported')"
-        class="flex items-center justify-center rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 p-1"
-        :class="{
-          'text-lg': settings.emoji_size === 'small',
-          'text-3xl': settings.emoji_size === 'medium',
-          'text-6xl': settings.emoji_size === 'large',
-          'bg-gray-300 dark:bg-gray-600 ring ring-gray-500': emoji.id === highlightedEmojiId
-        }"
-        @click.exact="copyEmoji(emoji)"
-        @click.shift.exact="addEmojiToSelected(emoji, index)"
-        @click.ctrl.exact="pinEmoji(emoji)"
-        tabindex="-1"
-        >
-        {{ emoji.emoji }}
-      </button>
-      
+    <div class="overflow-y-auto grow" style="min-height:1px;">
+      <div class="flex flex-wrap items-start justify-center gap-2 p-2">
+        
+        <button type="button"
+          v-for="(emojiData, emojiIndex) in allUnfilteredEmojis"
+          :id="'emoji-'+emojiIndex"
+          :title="emojis[emojiData.name].name"
+          class="relative flex items-center justify-center p-1 rounded-md cursor-pointer focus:outline-none min-w-10 min-h-10"
+          :class="{
+            'text-lg': settings.emoji_size === 'small',
+            'text-3xl': settings.emoji_size === 'medium',
+            'text-6xl': settings.emoji_size === 'large',
+            'bg-gray-300': emojiIndex === highlightedEmojiIndex
+          }"
+          @click.exact="copyEmoji(emojiData)"
+          @click.shift.exact="addEmojiToSelected(emojiData, emojiIndex)"
+          @click.ctrl.exact="pinEmoji(emojiData, emojiIndex)"
+          @click.alt.exact="removeEmojiFromHistory(emojiData, emojiIndex)"
+          >
+          
+          <div v-if="emojiData.pinned" class="absolute top-0 flex items-center justify-center text-yellow-400 rounded-full size-4 -right-1">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star size-3"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>
+          </div>
+          
+          <div v-if="emojiData.hot" class="absolute top-0 flex items-center justify-center text-gray-500 rounded-full size-4 dark:text-gray-300 -right-1">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock-icon lucide-clock size-3"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
+          </div>
+          
+          <span v-if="emojiData.modifier" class="leading-none">
+            {{ emojis[emojiData.name].alts[emojis[emojiData.name].alt_indices[emojiData.modifier]].emoji }}
+          </span>
+          <span v-else class="leading-none">
+            {{ emojis[emojiData.name].emoji }}
+          </span>
+          
+        </button>
+        
+      </div>
     </div>
     
-    <div class="flex items-center gap-8 px-4 py-2 bg-gray-200 shrink-0 dark:bg-gray-800">
+    <div class="flex items-center px-4 py-2 bg-gray-200 shrink-0 dark:bg-gray-800">
+      <div class="flex items-center justify-center text-gray-400 shrink-0 size-10">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clipboard-icon lucide-clipboard"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+      </div>
       <div class="flex flex-wrap items-center gap-1 grow">
-        <div class="flex items-center justify-center text-gray-400 size-10">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clipboard-icon lucide-clipboard"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
-        </div>
-        <div v-for="(emoji, index) in selectedEmojis">
+        <div v-for="(emojiData, index) in selectedEmojis">
           <button type="button"
-            class="relative flex items-center justify-center text-3xl rounded-md cursor-pointer focus:outline-none min-w-8 min-h-8 group"
+            class="flex items-center justify-center p-1 text-3xl rounded-md cursor-pointer group focus:outline-none min-w-10 min-h-10"
             @click="removeSelectedEmoji(index)"
-            :title="'Remove ' + emoji.name + ' from clipboard'"
+            :title="'Remove ' + emojiData.name + ' from clipboard'"
             >
             <div class="absolute top-0 right-0 flex items-center justify-center text-gray-900 transition-opacity rounded-full opacity-0 size-4 bg-gray-600/40 dark:bg-gray-200/40 dark:text-gray-50 group-hover:opacity-100">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-icon lucide-x size-3"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </div>
-            {{ emoji.emoji }}
+            <span v-if="emojiData.modifier" class="leading-none">
+            {{ emojis[emojiData.name].alts[emojis[emojiData.name].alt_indices[emojiData.modifier]].emoji }}
+          </span>
+          <span v-else class="leading-none">
+            {{ emojis[emojiData.name].emoji }}
+          </span>
           </button>
         </div>
       </div>
-      <button type="button" class="flex items-center justify-center text-blue-800 rounded-md cursor-pointer shrink-0 size-8 dark:text-blue-100 focus:outline-none" @click="showDialog">
+      <button type="button" class="flex items-center justify-center p-1 ml-8 text-blue-800 rounded-md cursor-pointer shrink-0 size-10 dark:text-blue-100 focus:outline-none" @click="showDialog">
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings-icon lucide-settings size-5"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
     </div>
@@ -609,6 +648,34 @@ onMounted(() => filterInput.value.focus());
                 <div>
                   <label for="max-hot-emojis" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Max History</label>
                   <input type="number" id="max-hot-emojis" min="0" max="50" v-model="settings.max_hot_emojis" class="mt-1 w-24 rounded-md bg-white dark:bg-gray-800 px-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 placeholder:text-gray-500 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6" />
+                </div>
+                
+              </div>
+              
+              <div class="flex flex-wrap items-start gap-8 mt-6">
+                
+                <div>
+                  <label for="st1" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Skin Tone 1</label>
+                  <select v-model="settings.st1" id="st1" class="mt-1 rounded-md bg-white dark:bg-gray-800 pl-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6">
+                    <option :value="null">✋ Base</option>
+                    <option value="lst">✋🏻 Light</option>
+                    <option value="mlst">✋🏼 Medium-Light</option>
+                    <option value="mst">✋🏽 Medium</option>
+                    <option value="mdst">✋🏾 Medium-Dark</option>
+                    <option value="dst">✋🏿 Dark</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="st2" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Skin Tone 2</label>
+                  <select v-model="settings.st2" id="st2" class="mt-1 rounded-md bg-white dark:bg-gray-800 pl-3 py-1.5 text-base text-black dark:text-gray-100 outline-1 -outline-offset-1 outline-white/10 focus:outline-0 focus-visible:-outline-offset-2 focus-visible:outline-indigo-500 sm:text-sm/6 disabled:opacity-30" :disabled="!settings.st1">
+                    <option :value="null" :disabled="settings.st1">✋ Base</option>
+                    <option value="lst">✋🏻 Light</option>
+                    <option value="mlst">✋🏼 Medium-Light</option>
+                    <option value="mst">✋🏽 Medium</option>
+                    <option value="mdst">✋🏾 Medium-Dark</option>
+                    <option value="dst">✋🏿 Dark</option>
+                  </select>
                 </div>
                 
               </div>
@@ -671,10 +738,10 @@ onMounted(() => filterInput.value.focus());
               </p>
               
               <p class="mt-3 text-sm">
-                Source code: <a href="https://github.com/cliambrown/taurimoji" target="_blank">github.com/cliambrown/taurimoji</a>
+                Source code: <a href="https://github.com/cliambrown/taurimoji" target="_blank" class="text-blue-600 underline dark:text-blue-300">github.com/cliambrown/taurimoji</a>
               </p>
               
-              <br></br>
+              <div class="mb-12"></div>
               
             </div>
             
